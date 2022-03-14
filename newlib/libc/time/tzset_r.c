@@ -1,13 +1,29 @@
 #include <_ansi.h>
+#include <limits.h>	/* {,_POSIX_}TZNAME_MAX */
 #include <reent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>	/* sysconf(_SC_TZNAME_MAX) */
 #include <sys/types.h>
 #include <sys/time.h>
 #include "local.h"
 
 #define sscanf siscanf	/* avoid to pull in FP functions. */
+
+#define TZNAME_MIN	3	/* POSIX specified minimum TZ abbr size */
+/* TZNAME_MAX - POSIX specified maximum TZ abbr size */
+/* define TZNAME_MAX if undefined and available */
+#if	!defined(TZNAME_MAX)
+#if	 defined(_POSIX_TZNAME_MAX)
+#define TZNAME_MAX	_POSIX_TZNAME_MAX	/* use POSIX value */
+#elif	 defined(_SC_TZNAME_MAX)
+#define TZNAME_MAX	sysconf(_SC_TZNAME_MAX)	/* use sysconf value */
+#else
+#error	"None of TZNAME_MAX, _POSIX_TZNAME_MAX, _SC_TZNAME_MAX are defined"
+#define TZNAME_MAX	9			/* could use fallback value */
+#endif	/* defined _POSIX_TZNAME_MAX || _SC_TZNAME_MAX */
+#endif	/* !defined(TZNAME_MAX) */
 
 static char __tzname_std[11];
 static char __tzname_dst[11];
@@ -45,8 +61,25 @@ _tzset_unlocked_r (struct _reent *reent_ptr)
   if (*tzenv == ':')
     ++tzenv;  
 
-  if (sscanf (tzenv, "%10[^0-9,+-]%n", __tzname_std, &n) <= 0)
-    return;
+  /* allow POSIX angle bracket < > quoted signed alphanumeric tz abbr e.g. <MESZ+0330> */
+  if (*tzenv == '<')
+    {
+      ++tzenv;
+
+      /* quit if no items, too few or too many chars, or no close quote '>' */
+      if (sscanf (tzenv, "%10[-+0-9A-Za-z]%n", __tzname_std, &n) <= 0
+		|| n < TZNAME_MIN || TZNAME_MAX < n || '>' != tzenv[n])
+        return;
+
+      ++tzenv;	/* bump for close quote '>' */
+    }
+  else
+    {
+      /* allow POSIX unquoted alphabetic tz abbr e.g. MESZ */
+      if (sscanf (tzenv, "%10[A-Za-z]%n", __tzname_std, &n) <= 0
+				|| n < TZNAME_MIN || TZNAME_MAX < n)
+        return;
+    }
  
   tzenv += n;
 
@@ -68,17 +101,38 @@ _tzset_unlocked_r (struct _reent *reent_ptr)
   tz->__tzrule[0].offset = sign * (ss + SECSPERMIN * mm + SECSPERHOUR * hh);
   _tzname[0] = __tzname_std;
   tzenv += n;
-  
-  if (sscanf (tzenv, "%10[^0-9,+-]%n", __tzname_dst, &n) <= 0)
-    { /* No dst */
-      _tzname[1] = _tzname[0];
-      _timezone = tz->__tzrule[0].offset;
-      _daylight = 0;
-      return;
+
+  /* allow POSIX angle bracket < > quoted signed alphanumeric tz abbr e.g. <MESZ+0330> */
+  if (*tzenv == '<')
+    {
+      ++tzenv;
+
+      /* quit if no items, too few or too many chars, or no close quote '>' */
+      if (sscanf (tzenv, "%10[-+0-9A-Za-z]%n", __tzname_dst, &n) <= 0
+		|| n < TZNAME_MIN || TZNAME_MAX < n || '>' != tzenv[n])
+	{ /* No dst */
+	  _tzname[1] = _tzname[0];
+	  _timezone = tz->__tzrule[0].offset;
+	  _daylight = 0;
+	  return;
+	}
+
+      ++tzenv;	/* bump for close quote '>' */
     }
   else
-    _tzname[1] = __tzname_dst;
+    {
+      /* allow POSIX unquoted alphabetic tz abbr e.g. MESZ */
+      if (sscanf (tzenv, "%10[A-Za-z]%n", __tzname_dst, &n) <= 0
+				|| n < TZNAME_MIN || TZNAME_MAX < n)
+	{ /* No dst */
+	  _tzname[1] = _tzname[0];
+	  _timezone = tz->__tzrule[0].offset;
+	  _daylight = 0;
+	  return;
+	}
+    }
 
+  _tzname[1] = __tzname_dst;
   tzenv += n;
 
   /* otherwise we have a dst name, look for the offset */
